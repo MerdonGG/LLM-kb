@@ -1,0 +1,18 @@
+# Векторная база - пересоздаётся на сервере
+chroma_db/
+
+# PDF методички - заливаются на сервер вручную
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Логи
+*.log
