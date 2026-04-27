@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import Auth from './Auth.jsx'
+import Admin from './Admin.jsx'
 import './App.css'
 
 const ShieldIcon = () => (
@@ -34,6 +36,14 @@ const UserIcon = () => (
   </svg>
 )
 
+const LogoutIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+    <polyline points="16 17 21 12 16 7"/>
+    <line x1="21" y1="12" x2="9" y2="12"/>
+  </svg>
+)
+
 function TypingDots() {
   return (
     <div className="typing-dots">
@@ -61,11 +71,17 @@ function Message({ msg }) {
 }
 
 export default function App() {
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('user')
+    return saved ? JSON.parse(saved) : null
+  })
+  const [page, setPage] = useState(() => localStorage.getItem('page') || 'chat')
+
   const [messages, setMessages] = useState([
     {
       id: 0,
       role: 'bot',
-      content: 'Здравствуйте! Я учебный ассистент кафедры компьютерной безопасности и технической экспертизы. Задайте вопрос по учебным материалам.',
+      content: 'Здравствуйте! Я учебный ассистент кафедры компьютерной безопасности и экспертизы. Задайте вопрос по учебным материалам.',
     }
   ])
   const [input, setInput] = useState('')
@@ -77,10 +93,42 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  const navigate = (p) => {
+    setPage(p)
+    localStorage.setItem('page', p)
+  }
+
+  const handleLogin = (data) => {
+    const u = { username: data.username, full_name: data.full_name, group_number: data.group_number, role: data.role }
+    setUser(u)
+    navigate(data.role === 'admin' ? 'admin' : 'chat')
+  }
+
+  const handleLogout = async () => {
+    const token = localStorage.getItem('token')
+    if (token) {
+      await fetch('/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    }
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    localStorage.removeItem('page')
+    setUser(null)
+    navigate('chat')
+    setMessages([{
+      id: 0,
+      role: 'bot',
+      content: 'Здравствуйте! Я учебный ассистент кафедры компьютерной безопасности и экспертизы. Задайте вопрос по учебным материалам.',
+    }])
+  }
+
   const send = async () => {
     const question = input.trim()
     if (!question || loading) return
 
+    const token = localStorage.getItem('token')
     const userMsg = { id: Date.now(), role: 'user', content: question }
     const botPlaceholder = { id: Date.now() + 1, role: 'bot', content: '', loading: true }
 
@@ -91,9 +139,16 @@ export default function App() {
     try {
       const res = await fetch('/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
         body: JSON.stringify({ question }),
       })
+      if (res.status === 401) {
+        handleLogout()
+        return
+      }
       const data = await res.json()
       setMessages(prev =>
         prev.map(m => m.id === botPlaceholder.id
@@ -121,6 +176,9 @@ export default function App() {
     }
   }
 
+  if (!user) return <Auth onLogin={handleLogin} />
+  if (user.role === 'admin' && page === 'admin') return <Admin token={localStorage.getItem('token')} onBack={() => navigate('chat')} />
+
   return (
     <div className="layout">
       <header className="header">
@@ -129,9 +187,20 @@ export default function App() {
         </div>
         <div className="header__text">
           <h1 className="header__title">Учебный ассистент</h1>
-          <p className="header__subtitle">Кафедра компьютерной безопасности и технической экспертизы</p>
+          <p className="header__subtitle">Кафедра компьютерной безопасности и экспертизы</p>
         </div>
-        <div className="header__badge">AI</div>
+        {user.role === 'admin' && (
+          <button className="header__nav-btn" onClick={() => navigate('admin')}>
+            Панель админа
+          </button>
+        )}
+        <div className="header__user">
+          <span className="header__user-name">{user.full_name}</span>
+          <span className="header__user-group">{user.role === 'admin' ? 'Администратор' : `Группа ${user.group_number}`}</span>
+        </div>
+        <button className="header__logout" onClick={handleLogout} title="Выйти">
+          <LogoutIcon />
+        </button>
       </header>
 
       <main className="chat">

@@ -1,20 +1,22 @@
 import os
 import requests
 import chromadb
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.embeddings import Embeddings
+from auth import init_db, register_user, login_user, get_user_by_token, logout_user, log_chat, get_all_users, get_user_chats
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL = "qwen3:8b"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PDF_DIR = os.environ.get("PDF_DIR", os.path.join(BASE_DIR, "pdfs"))
-CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(BASE_DIR, "chroma_db"))
+PDF_DIR = os.environ.get("PDF_DIR", os.path.join(BASE_DIR, ".."))
+CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(BASE_DIR, "..", "chroma_db"))
 
 app = FastAPI()
 
@@ -24,6 +26,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+init_db()
 
 # Кастомный класс эмбеддингов
 class OllamaEmbeddingsDirect(Embeddings):
@@ -104,9 +108,57 @@ PROMPT_TEMPLATE = (
 class QuestionRequest(BaseModel):
     question: str
 
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    full_name: str
+    group_number: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+def get_current_user(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Необходима авторизация")
+    token = authorization.split(" ")[1]
+    user = get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Недействительный или истёкший токен")
+    return user
+
+def require_admin(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
+    return user
+
+@app.post("/auth/register")
+def register(req: RegisterRequest):
+    if not req.username.strip() or not req.password.strip():
+        raise HTTPException(status_code=400, detail="Логин и пароль не могут быть пустыми")
+    result = register_user(req.username, req.password, req.full_name, req.group_number)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return {"message": "Регистрация успешна"}
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    result = login_user(req.username, req.password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    return result
+
+@app.post("/auth/logout")
+def logout(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        logout_user(authorization.split(" ")[1])
+    return {"message": "Выход выполнен"}
+
 
 @app.post("/ask")
-def ask(req: QuestionRequest):
+def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Вопрос не может быть пустым")
 
@@ -120,8 +172,19 @@ def ask(req: QuestionRequest):
     )
     resp.raise_for_status()
     answer = resp.json()["response"]
-
+    log_chat(user["id"], req.question, answer)
     return {"answer": answer}
+
+
+@app.get("/admin/users")
+def admin_users(authorization: Optional[str] = Header(None)):
+    require_admin(authorization)
+    return get_all_users()
+
+@app.get("/admin/users/{user_id}/chats")
+def admin_user_chats(user_id: int, authorization: Optional[str] = Header(None)):
+    require_admin(authorization)
+    return get_user_chats(user_id)
 
 
 @app.get("/health")

@@ -51,6 +51,56 @@
   background: rgba(79, 142, 247, 0.08);
 }
 
+.header__user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-right: 8px;
+}
+
+.header__user-name {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.header__user-group {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.header__logout {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.header__logout:hover {
+  color: #f87171;
+  border-color: #f87171;
+}
+
+.header__nav-btn {
+  background: rgba(79, 142, 247, 0.1);
+  border: 1px solid var(--accent-dim);
+  border-radius: 6px;
+  color: var(--accent);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.header__nav-btn:hover {
+  background: rgba(79, 142, 247, 0.2);
+}
+
 /* ── Chat ── */
 .chat {
   flex: 1;
