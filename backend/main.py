@@ -12,7 +12,7 @@ from auth import init_db, register_user, login_user, get_user_by_token, logout_u
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
-LLM_MODEL = "qwen3:8b"
+LLM_MODEL = "qwen2.5:3b"  # Быстрая модель для CPU
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.environ.get("PDF_DIR", os.path.join(BASE_DIR, ".."))
@@ -168,7 +168,7 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
     resp = requests.post(
         f"{OLLAMA_URL}/api/generate",
         json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-        timeout=120,
+        timeout=600,
     )
     resp.raise_for_status()
     answer = resp.json()["response"]
