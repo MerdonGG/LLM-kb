@@ -107,6 +107,7 @@ PROMPT_TEMPLATE = (
 
 class QuestionRequest(BaseModel):
     question: str
+    model: Optional[str] = "qwen2.5:3b"  # По умолчанию быстрая модель
 
 class RegisterRequest(BaseModel):
     username: str
@@ -162,12 +163,15 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Вопрос не может быть пустым")
 
+    # Используем модель из запроса или дефолтную
+    model = req.model or "qwen2.5:3b"
+    
     context = retrieve(req.question)
     prompt = PROMPT_TEMPLATE.format(context=context, question=req.question)
 
     resp = requests.post(
         f"{OLLAMA_URL}/api/generate",
-        json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
+        json={"model": model, "prompt": prompt, "stream": False},
         timeout=600,
     )
     resp.raise_for_status()
@@ -185,6 +189,33 @@ def admin_users(authorization: Optional[str] = Header(None)):
 def admin_user_chats(user_id: int, authorization: Optional[str] = Header(None)):
     require_admin(authorization)
     return get_user_chats(user_id)
+
+
+@app.get("/models")
+def get_models():
+    """Возвращает список доступных моделей"""
+    return {
+        "models": [
+            {
+                "id": "qwen2.5:3b",
+                "name": "Qwen 2.5 (3B) - Быстрая",
+                "description": "Быстрые ответы (~20-40 сек)",
+                "speed": "fast"
+            },
+            {
+                "id": "qwen3:8b",
+                "name": "Qwen 3 (8B) - Качественная",
+                "description": "Сбалансированное качество (~60-90 сек)",
+                "speed": "medium"
+            },
+            {
+                "id": "llama3.1:8b",
+                "name": "Llama 3.1 (8B) - Лучшая",
+                "description": "Максимальное качество (~90-120 сек)",
+                "speed": "slow"
+            }
+        ]
+    }
 
 
 @app.get("/health")

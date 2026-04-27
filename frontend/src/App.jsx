@@ -86,8 +86,18 @@ export default function App() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [selectedModel, setSelectedModel] = useState('qwen2.5:3b')
+  const [models, setModels] = useState([])
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
+
+  useEffect(() => {
+    // Загрузим список моделей
+    fetch('/models')
+      .then(res => res.json())
+      .then(data => setModels(data.models))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -143,7 +153,7 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, model: selectedModel }),
       })
       if (res.status === 401) {
         handleLogout()
@@ -213,6 +223,26 @@ export default function App() {
       </main>
 
       <footer className="input-area">
+        {models.length > 0 && (
+          <div className="model-selector">
+            <label htmlFor="model-select" className="model-selector__label">
+              Модель:
+            </label>
+            <select
+              id="model-select"
+              className="model-selector__select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={loading}
+            >
+              {models.map(model => (
+                <option key={model.id} value={model.id}>
+                  {model.name} — {model.description}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="input-wrap">
           <textarea
             ref={inputRef}
