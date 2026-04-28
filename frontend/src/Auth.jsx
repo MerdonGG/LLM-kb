@@ -62,7 +62,7 @@ export default function Auth({ onLogin }) {
         <div className="auth-card__header">
           <div className="auth-card__icon"><ShieldIcon /></div>
           <h1 className="auth-card__title">Учебный ассистент</h1>
-          <p className="auth-card__subtitle">Кафедра компьютерной безопасности и экспертизы</p>
+          <p className="auth-card__subtitle">Кафедра компьютерной безопасности и технической экспертизы</p>
         </div>
 
         <div className="auth-tabs">

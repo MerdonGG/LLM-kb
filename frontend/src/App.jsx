@@ -81,7 +81,7 @@ export default function App() {
     {
       id: 0,
       role: 'bot',
-      content: 'Здравствуйте! Я учебный ассистент кафедры компьютерной безопасности и экспертизы. Задайте вопрос по учебным материалам.',
+      content: 'Здравствуйте! Я учебный ассистент кафедры компьютерной безопасности и технической экспертизы. Задайте вопрос по учебным материалам.',
     }
   ])
   const [input, setInput] = useState('')
@@ -261,7 +261,7 @@ export default function App() {
         </div>
         <div className="header__text">
           <h1 className="header__title">Учебный ассистент</h1>
-          <p className="header__subtitle">Кафедра компьютерной безопасности и экспертизы</p>
+          <p className="header__subtitle">Кафедра компьютерной безопасности и технической экспертизы</p>
         </div>
         {user.role === 'admin' && (
           <button className="header__nav-btn" onClick={() => navigate('admin')}>
