@@ -2,6 +2,7 @@ import os
 import requests
 import chromadb
 import json
+import pickle
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.embeddings import Embeddings
 from auth import init_db, register_user, login_user, get_user_by_token, logout_user, log_chat, get_all_users, get_user_chats
+from rank_bm25 import BM25Okapi
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
@@ -51,9 +53,27 @@ class OllamaEmbeddingsDirect(Embeddings):
 embedder = OllamaEmbeddingsDirect()
 chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
 
+# Глобальные переменные для BM25
+bm25_index = None
+bm25_documents = []
+bm25_metadatas = []
+BM25_INDEX_PATH = os.path.join(CHROMA_DIR, "bm25_index.pkl")
+
 try:
     collection = chroma_client.get_collection("metodichki")
     print(f"Векторная база загружена ({collection.count()} фрагментов)")
+    
+    # Загружаем BM25 индекс если существует
+    if os.path.exists(BM25_INDEX_PATH):
+        with open(BM25_INDEX_PATH, 'rb') as f:
+            bm25_data = pickle.load(f)
+            bm25_index = bm25_data['index']
+            bm25_documents = bm25_data['documents']
+            bm25_metadatas = bm25_data['metadatas']
+        print(f"BM25 индекс загружен ({len(bm25_documents)} документов)")
+    else:
+        print("BM25 индекс не найден, будет создан при первом запросе")
+        
 except Exception:
     print("Векторная база не найдена. Создаю...")
 
@@ -66,7 +86,11 @@ except Exception:
     docs = []
     for path in PDF_FILES:
         loader = PyMuPDFLoader(path)
-        docs.extend(loader.load())
+        loaded_docs = loader.load()
+        # Добавляем имя файла в метаданные
+        for doc in loaded_docs:
+            doc.metadata["source_file"] = os.path.basename(path)
+        docs.extend(loaded_docs)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=400)
     chunks = splitter.split_documents(docs)
@@ -80,31 +104,232 @@ except Exception:
     BATCH_SIZE = 50
     texts = [c.page_content for c in chunks]
     ids = [str(i) for i in range(len(chunks))]
+    
+    # Подготовка метаданных
+    metadatas = []
+    for c in chunks:
+        metadata = {
+            "source": c.metadata.get("source_file", "unknown"),
+            "page": c.metadata.get("page", 0) + 1,  # +1 для человеко-читаемого номера
+        }
+        metadatas.append(metadata)
 
     for i in range(0, len(texts), BATCH_SIZE):
         batch_texts = texts[i:i+BATCH_SIZE]
         batch_ids = ids[i:i+BATCH_SIZE]
+        batch_metadatas = metadatas[i:i+BATCH_SIZE]
         batch_embeddings = embedder.embed_documents(batch_texts)
-        collection.add(documents=batch_texts, embeddings=batch_embeddings, ids=batch_ids)
+        collection.add(
+            documents=batch_texts,
+            embeddings=batch_embeddings,
+            ids=batch_ids,
+            metadatas=batch_metadatas
+        )
         print(f"  Обработано {min(i+BATCH_SIZE, len(texts))}/{len(texts)}")
 
     print("Векторная база создана!")
+    
+    # Создаём BM25 индекс
+    print("Создаю BM25 индекс...")
+    tokenized_corpus = [doc.lower().split() for doc in texts]
+    bm25_index = BM25Okapi(tokenized_corpus)
+    bm25_documents = texts
+    bm25_metadatas = metadatas
+    
+    # Сохраняем BM25 индекс
+    with open(BM25_INDEX_PATH, 'wb') as f:
+        pickle.dump({
+            'index': bm25_index,
+            'documents': bm25_documents,
+            'metadatas': bm25_metadatas
+        }, f)
+    print("BM25 индекс создан и сохранён!")
 
 
-def retrieve(question: str, k: int = 8) -> str:
+def hybrid_retrieve(question: str, k: int = 12, alpha: float = 0.5) -> tuple[str, list[dict]]:
+    """
+    Гибридный поиск: комбинация BM25 (keyword) и векторного (semantic) поиска
+    
+    Args:
+        question: Вопрос пользователя
+        k: Количество фрагментов для извлечения
+        alpha: Вес векторного поиска (0.0 = только BM25, 1.0 = только векторный, 0.5 = баланс)
+    
+    Returns:
+        Tuple: (контекст, список метаданных источников)
+    """
+    global bm25_index, bm25_documents, bm25_metadatas
+    
+    # Если BM25 индекс не загружен, используем только векторный поиск
+    if bm25_index is None:
+        print("[HYBRID] BM25 индекс не доступен, используем только векторный поиск")
+        return retrieve(question, k)
+    
+    # 1. Векторный поиск
     q_emb = embedder.embed_query(question)
-    results = collection.query(query_embeddings=[q_emb], n_results=k)
-    return "\n\n".join(results["documents"][0])
+    vector_results = collection.query(
+        query_embeddings=[q_emb],
+        n_results=k * 2,  # Берём больше для комбинирования
+        include=["documents", "distances", "metadatas"]
+    )
+    
+    # 2. BM25 поиск
+    tokenized_query = question.lower().split()
+    bm25_scores = bm25_index.get_scores(tokenized_query)
+    
+    # Получаем топ-k индексов по BM25
+    bm25_top_indices = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:k * 2]
+    
+    # 3. Комбинируем результаты
+    # Нормализуем скоры
+    vector_docs = vector_results["documents"][0]
+    vector_distances = vector_results["distances"][0]
+    vector_metas = vector_results["metadatas"][0]
+    
+    # Преобразуем distance в similarity (меньше distance = больше similarity)
+    max_dist = max(vector_distances) if vector_distances else 1.0
+    vector_scores = {doc: 1.0 - (dist / max_dist) for doc, dist in zip(vector_docs, vector_distances)}
+    
+    # Нормализуем BM25 скоры
+    max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+    bm25_normalized = {bm25_documents[i]: bm25_scores[i] / max_bm25 for i in bm25_top_indices}
+    
+    # Комбинируем скоры
+    combined_scores = {}
+    all_docs = set(vector_docs) | set(bm25_normalized.keys())
+    
+    for doc in all_docs:
+        vector_score = vector_scores.get(doc, 0.0)
+        bm25_score = bm25_normalized.get(doc, 0.0)
+        combined_scores[doc] = alpha * vector_score + (1 - alpha) * bm25_score
+    
+    # Сортируем по комбинированному скору
+    sorted_docs = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # 4. Фильтрация и дедупликация
+    filtered_docs = []
+    filtered_metas = []
+    seen_docs = set()
+    
+    for doc, score in sorted_docs:
+        # Фильтр по минимальному скору
+        if score < 0.1:
+            continue
+        
+        # Дедупликация
+        doc_normalized = doc.strip().lower()[:100]
+        if doc_normalized in seen_docs:
+            continue
+        
+        seen_docs.add(doc_normalized)
+        filtered_docs.append(doc)
+        
+        # Находим метаданные
+        if doc in vector_docs:
+            idx = vector_docs.index(doc)
+            filtered_metas.append(vector_metas[idx])
+        elif doc in bm25_documents:
+            idx = bm25_documents.index(doc)
+            filtered_metas.append(bm25_metadatas[idx])
+        else:
+            filtered_metas.append({})
+        
+        if len(filtered_docs) >= 8:
+            break
+    
+    # Если ничего не нашли, fallback на векторный поиск
+    if not filtered_docs:
+        print("[HYBRID] Гибридный поиск не дал результатов, fallback на векторный")
+        return retrieve(question, k)
+    
+    context = "\n\n---\n\n".join(filtered_docs)
+    return context, filtered_metas
 
 
-PROMPT_TEMPLATE = (
-    "Ты помощник курсанта кафедры компьютерной безопасности и технической экспертизы. "
-    "Отвечай только на основе предоставленного контекста из методичек. "
-    "Если ответа в контексте нет — так и скажи.\n\n"
-    "Контекст:\n{context}\n\n"
-    "Вопрос: {question}\n\n"
-    "Ответ:"
-)
+def retrieve(question: str, k: int = 12) -> tuple[str, list[dict]]:
+    """
+    Улучшенная функция поиска с фильтрацией и дедупликацией
+    
+    Args:
+        question: Вопрос пользователя
+        k: Количество фрагментов для извлечения (увеличено с 8 до 12)
+    
+    Returns:
+        Tuple: (контекст, список метаданных источников)
+    """
+    q_emb = embedder.embed_query(question)
+    
+    # Извлекаем больше кандидатов для фильтрации
+    results = collection.query(
+        query_embeddings=[q_emb], 
+        n_results=k,
+        include=["documents", "distances", "metadatas"]
+    )
+    
+    documents = results["documents"][0]
+    distances = results["distances"][0] if "distances" in results else [0] * len(documents)
+    metadatas = results["metadatas"][0] if "metadatas" in results else [{}] * len(documents)
+    
+    # Фильтрация по релевантности (distance threshold)
+    # Меньше distance = более релевантно
+    filtered_docs = []
+    filtered_metas = []
+    seen_docs = set()  # Для дедупликации
+    
+    for doc, dist, meta in zip(documents, distances, metadatas):
+        # Фильтр 1: Релевантность (distance < 1.5 обычно хорошо для cosine distance)
+        if dist > 1.5:
+            continue
+            
+        # Фильтр 2: Дедупликация (убираем очень похожие фрагменты)
+        doc_normalized = doc.strip().lower()[:100]  # Первые 100 символов для сравнения
+        if doc_normalized in seen_docs:
+            continue
+            
+        seen_docs.add(doc_normalized)
+        filtered_docs.append(doc)
+        filtered_metas.append(meta)
+        
+        # Ограничиваем до 8 лучших фрагментов
+        if len(filtered_docs) >= 8:
+            break
+    
+    # Если после фильтрации ничего не осталось, берём топ-3 без фильтра
+    if not filtered_docs:
+        filtered_docs = documents[:3]
+        filtered_metas = metadatas[:3]
+    
+    context = "\n\n---\n\n".join(filtered_docs)
+    return context, filtered_metas
+
+
+PROMPT_TEMPLATE = """Ты — учебный ассистент кафедры компьютерной безопасности и технической экспертизы.
+
+ТВОЯ ЗАДАЧА:
+- Отвечать на вопросы курсантов на основе учебных материалов
+- Давать точные, структурированные и понятные ответы
+- Использовать только информацию из предоставленного контекста
+
+ПРАВИЛА ОТВЕТА:
+1. Если ответ есть в контексте — дай полный, структурированный ответ
+2. Если ответа нет в контексте — честно скажи: "В предоставленных материалах нет информации по этому вопросу"
+3. Не придумывай информацию, которой нет в контексте
+4. Используй термины и определения точно так, как они даны в материалах
+5. Если в контексте есть примеры — включи их в ответ
+
+СТРУКТУРА ОТВЕТА:
+- Начни с краткого определения или прямого ответа на вопрос
+- Затем дай подробное объяснение
+- Если есть примеры или важные детали — добавь их
+- Используй списки и структурирование для лучшей читаемости
+
+КОНТЕКСТ ИЗ МЕТОДИЧЕК:
+{context}
+
+ВОПРОС КУРСАНТА:
+{question}
+
+ТВОЙ ОТВЕТ:"""
 
 
 class QuestionRequest(BaseModel):
@@ -169,8 +394,35 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
     # Используем модель из запроса или дефолтную
     model = req.model or "qwen2.5:3b"
     
-    context = retrieve(req.question)
+    # Получаем контекст и метаданные с помощью гибридного поиска
+    context, sources = hybrid_retrieve(req.question)
     prompt = PROMPT_TEMPLATE.format(context=context, question=req.question)
+    
+    # Форматируем источники для добавления в конец ответа
+    def format_sources(metadatas: list[dict]) -> str:
+        if not metadatas:
+            return ""
+        
+        # Группируем по файлам
+        sources_by_file = {}
+        for meta in metadatas:
+            source = meta.get("source", "unknown")
+            page = meta.get("page", "?")
+            if source not in sources_by_file:
+                sources_by_file[source] = []
+            if page not in sources_by_file[source]:
+                sources_by_file[source].append(page)
+        
+        # Форматируем
+        sources_text = "\n\n---\n\n**Источники:**\n"
+        for source, pages in sources_by_file.items():
+            pages_sorted = sorted([p for p in pages if isinstance(p, int)])
+            if pages_sorted:
+                sources_text += f"- {source}, стр. {', '.join(map(str, pages_sorted))}\n"
+            else:
+                sources_text += f"- {source}\n"
+        
+        return sources_text
 
     # Если включён streaming
     if req.stream:
@@ -187,10 +439,10 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                         "prompt": prompt,
                         "stream": True,
                         "options": {
-                            "num_ctx": 2048,        # Уменьшен контекст (было 4096 по умолчанию)
-                            "num_predict": 512,     # Ограничение длины ответа
-                            "temperature": 0.7,     # Меньше вариативности = быстрее
-                            "top_k": 40,            # Меньше кандидатов = быстрее
+                            "num_ctx": 2048,
+                            "num_predict": 512,
+                            "temperature": 0.7,
+                            "top_k": 40,
                             "top_p": 0.9,
                             "repeat_penalty": 1.1
                         }
@@ -221,7 +473,14 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                             print(f"[STREAMING] Генерация завершена. Всего токенов: {token_count}")
                             print(f"[STREAMING] Длина ответа: {len(full_answer)} символов")
                             
-                            # Логируем полный ответ
+                            # Добавляем источники в конец ответа
+                            sources_text = format_sources(sources)
+                            if sources_text:
+                                for char in sources_text:
+                                    yield f"data: {json.dumps({'token': char})}\n\n"
+                                full_answer += sources_text
+                            
+                            # Логируем полный ответ с источниками
                             log_chat(user["id"], req.question, full_answer)
                             yield f"data: {json.dumps({'done': True})}\n\n"
                             break
@@ -253,6 +512,12 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
         )
         resp.raise_for_status()
         answer = resp.json()["response"]
+        
+        # Добавляем источники
+        sources_text = format_sources(sources)
+        if sources_text:
+            answer += sources_text
+        
         log_chat(user["id"], req.question, answer)
         return {"answer": answer}
 

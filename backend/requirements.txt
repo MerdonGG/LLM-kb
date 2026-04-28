@@ -7,3 +7,4 @@ langchain-text-splitters
 langchain-core
 pymupdf
 python-multipart
+rank-bm25
