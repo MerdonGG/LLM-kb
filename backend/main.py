@@ -146,13 +146,13 @@ except Exception:
     print("BM25 индекс создан и сохранён!")
 
 
-def hybrid_retrieve(question: str, k: int = 12, alpha: float = 0.5) -> tuple[str, list[dict]]:
+def hybrid_retrieve(question: str, k: int = 8, alpha: float = 0.5) -> tuple[str, list[dict]]:
     """
     Гибридный поиск: комбинация BM25 (keyword) и векторного (semantic) поиска
     
     Args:
         question: Вопрос пользователя
-        k: Количество фрагментов для извлечения
+        k: Количество фрагментов для извлечения (оптимизировано до 8)
         alpha: Вес векторного поиска (0.0 = только BM25, 1.0 = только векторный, 0.5 = баланс)
     
     Returns:
@@ -440,7 +440,7 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                         "stream": True,
                         "options": {
                             "num_ctx": 2048,
-                            "num_predict": 512,
+                            "num_predict": 256,     # Уменьшено с 512 для скорости
                             "temperature": 0.7,
                             "top_k": 40,
                             "top_p": 0.9,
@@ -501,7 +501,7 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                 "stream": False,
                 "options": {
                     "num_ctx": 2048,
-                    "num_predict": 512,
+                    "num_predict": 256,     # Уменьшено с 512 для скорости
                     "temperature": 0.7,
                     "top_k": 40,
                     "top_p": 0.9,
@@ -541,19 +541,19 @@ def get_models():
             {
                 "id": "qwen2.5:3b",
                 "name": "Qwen 2.5 (3B) - Быстрая",
-                "description": "Быстрые ответы (~15-30 сек)",  # Обновлено с учётом оптимизации
+                "description": "Быстрые ответы (~10-20 сек)",  # Оптимизировано
                 "speed": "fast"
             },
             {
                 "id": "qwen3:8b",
                 "name": "Qwen 3 (8B) - Качественная",
-                "description": "Сбалансированное качество (~45-70 сек)",  # Обновлено
+                "description": "Сбалансированное качество (~30-50 сек)",  # Оптимизировано
                 "speed": "medium"
             },
             {
                 "id": "llama3.1:8b",
                 "name": "Llama 3.1 (8B) - Лучшая",
-                "description": "Максимальное качество (~65-90 сек)",  # Обновлено
+                "description": "Максимальное качество (~45-65 сек)",  # Оптимизировано
                 "speed": "slow"
             }
         ]
