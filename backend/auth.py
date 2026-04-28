@@ -48,7 +48,7 @@ def init_db():
     if not existing:
         conn.execute(
             "INSERT INTO users (username, password_hash, full_name, group_number, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("admin", hash_password("admin123"), "Администратор", "—", "admin", datetime.now().isoformat())
+            ("admin", hash_password("516129@32aA"), "Администратор", "—", "admin", datetime.now().isoformat())
         )
     conn.commit()
     conn.close()
