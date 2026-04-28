@@ -182,7 +182,19 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                 
                 resp = requests.post(
                     f"{OLLAMA_URL}/api/generate",
-                    json={"model": model, "prompt": prompt, "stream": True},
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": True,
+                        "options": {
+                            "num_ctx": 2048,        # Уменьшен контекст (было 4096 по умолчанию)
+                            "num_predict": 512,     # Ограничение длины ответа
+                            "temperature": 0.7,     # Меньше вариативности = быстрее
+                            "top_k": 40,            # Меньше кандидатов = быстрее
+                            "top_p": 0.9,
+                            "repeat_penalty": 1.1
+                        }
+                    },
                     timeout=600,
                     stream=True
                 )
@@ -224,7 +236,19 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
     else:
         resp = requests.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_ctx": 2048,
+                    "num_predict": 512,
+                    "temperature": 0.7,
+                    "top_k": 40,
+                    "top_p": 0.9,
+                    "repeat_penalty": 1.1
+                }
+            },
             timeout=600,
         )
         resp.raise_for_status()
@@ -252,19 +276,19 @@ def get_models():
             {
                 "id": "qwen2.5:3b",
                 "name": "Qwen 2.5 (3B) - Быстрая",
-                "description": "Быстрые ответы (~20-40 сек)",
+                "description": "Быстрые ответы (~15-30 сек)",  # Обновлено с учётом оптимизации
                 "speed": "fast"
             },
             {
                 "id": "qwen3:8b",
                 "name": "Qwen 3 (8B) - Качественная",
-                "description": "Сбалансированное качество (~60-90 сек)",
+                "description": "Сбалансированное качество (~45-70 сек)",  # Обновлено
                 "speed": "medium"
             },
             {
                 "id": "llama3.1:8b",
                 "name": "Llama 3.1 (8B) - Лучшая",
-                "description": "Максимальное качество (~90-120 сек)",
+                "description": "Максимальное качество (~65-90 сек)",  # Обновлено
                 "speed": "slow"
             }
         ]
