@@ -1,8 +1,10 @@
 import os
 import requests
 import chromadb
+import json
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from langchain_community.document_loaders import PyMuPDFLoader
@@ -108,6 +110,7 @@ PROMPT_TEMPLATE = (
 class QuestionRequest(BaseModel):
     question: str
     model: Optional[str] = "qwen2.5:3b"  # По умолчанию быстрая модель
+    stream: Optional[bool] = True  # По умолчанию включён streaming
 
 class RegisterRequest(BaseModel):
     username: str
@@ -169,15 +172,50 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
     context = retrieve(req.question)
     prompt = PROMPT_TEMPLATE.format(context=context, question=req.question)
 
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
-        timeout=600,
-    )
-    resp.raise_for_status()
-    answer = resp.json()["response"]
-    log_chat(user["id"], req.question, answer)
-    return {"answer": answer}
+    # Если включён streaming
+    if req.stream:
+        def generate():
+            full_answer = ""
+            try:
+                resp = requests.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={"model": model, "prompt": prompt, "stream": True},
+                    timeout=600,
+                    stream=True
+                )
+                resp.raise_for_status()
+                
+                for line in resp.iter_lines():
+                    if line:
+                        chunk = json.loads(line)
+                        if "response" in chunk:
+                            token = chunk["response"]
+                            full_answer += token
+                            # Отправляем токен клиенту в формате SSE
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+                        
+                        # Если генерация завершена
+                        if chunk.get("done", False):
+                            # Логируем полный ответ
+                            log_chat(user["id"], req.question, full_answer)
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            break
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return StreamingResponse(generate(), media_type="text/event-stream")
+    
+    # Если streaming отключён (обратная совместимость)
+    else:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=600,
+        )
+        resp.raise_for_status()
+        answer = resp.json()["response"]
+        log_chat(user["id"], req.question, answer)
+        return {"answer": answer}
 
 
 @app.get("/admin/users")

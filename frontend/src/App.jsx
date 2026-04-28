@@ -153,20 +153,74 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ question, model: selectedModel }),
+        body: JSON.stringify({ question, model: selectedModel, stream: true }),
       })
+      
       if (res.status === 401) {
         handleLogout()
         return
       }
-      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error('Network response was not ok')
+      }
+
+      // Обработка потока SSE
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let accumulatedText = ''
+
+      // Убираем индикатор загрузки
       setMessages(prev =>
         prev.map(m => m.id === botPlaceholder.id
-          ? { ...m, content: data.answer, loading: false }
+          ? { ...m, loading: false }
           : m
         )
       )
-    } catch {
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6))
+              
+              if (data.error) {
+                setMessages(prev =>
+                  prev.map(m => m.id === botPlaceholder.id
+                    ? { ...m, content: 'Ошибка: ' + data.error, loading: false }
+                    : m
+                  )
+                )
+                break
+              }
+
+              if (data.token) {
+                accumulatedText += data.token
+                setMessages(prev =>
+                  prev.map(m => m.id === botPlaceholder.id
+                    ? { ...m, content: accumulatedText, loading: false }
+                    : m
+                  )
+                )
+              }
+
+              if (data.done) {
+                break
+              }
+            } catch (e) {
+              // Игнорируем ошибки парсинга
+            }
+          }
+        }
+      }
+
+    } catch (error) {
       setMessages(prev =>
         prev.map(m => m.id === botPlaceholder.id
           ? { ...m, content: 'Ошибка соединения с сервером.', loading: false }
