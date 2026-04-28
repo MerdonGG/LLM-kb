@@ -177,6 +177,9 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
         def generate():
             full_answer = ""
             try:
+                print(f"[STREAMING] Начало генерации для вопроса: {req.question[:50]}...")
+                print(f"[STREAMING] Модель: {model}")
+                
                 resp = requests.post(
                     f"{OLLAMA_URL}/api/generate",
                     json={"model": model, "prompt": prompt, "stream": True},
@@ -185,22 +188,34 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
                 )
                 resp.raise_for_status()
                 
+                token_count = 0
                 for line in resp.iter_lines():
                     if line:
                         chunk = json.loads(line)
                         if "response" in chunk:
                             token = chunk["response"]
                             full_answer += token
+                            token_count += 1
+                            
                             # Отправляем токен клиенту в формате SSE
-                            yield f"data: {json.dumps({'token': token})}\n\n"
+                            sse_data = f"data: {json.dumps({'token': token})}\n\n"
+                            yield sse_data
+                            
+                            if token_count % 10 == 0:
+                                print(f"[STREAMING] Отправлено токенов: {token_count}")
                         
                         # Если генерация завершена
                         if chunk.get("done", False):
+                            print(f"[STREAMING] Генерация завершена. Всего токенов: {token_count}")
+                            print(f"[STREAMING] Длина ответа: {len(full_answer)} символов")
+                            
                             # Логируем полный ответ
                             log_chat(user["id"], req.question, full_answer)
                             yield f"data: {json.dumps({'done': True})}\n\n"
                             break
+                            
             except Exception as e:
+                print(f"[STREAMING] Ошибка: {e}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
         
         return StreamingResponse(generate(), media_type="text/event-stream")

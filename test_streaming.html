@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Тест Streaming API</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        input, button {
+            padding: 10px;
+            margin: 5px;
+            font-size: 14px;
+        }
+        #output {
+            background: #2a2a2a;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            min-height: 200px;
+        }
+        #logs {
+            background: #0a0a0a;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-line {
+            margin: 2px 0;
+            color: #888;
+        }
+        .log-error {
+            color: #ff4444;
+        }
+        .log-success {
+            color: #44ff44;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Тест Streaming API</h1>
+        
+        <div>
+            <input type="text" id="username" placeholder="Username" value="admin">
+            <input type="password" id="password" placeholder="Password" value="516129@32aA">
+            <button onclick="login()">Войти</button>
+        </div>
+        
+        <div>
+            <input type="text" id="question" placeholder="Вопрос" value="Что такое компьютерная безопасность?" style="width: 500px;">
+            <button onclick="ask()">Спросить</button>
+        </div>
+        
+        <div id="output"></div>
+        <div id="logs"></div>
+    </div>
+
+    <script>
+        let token = null;
+        
+        function addLog(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logs.appendChild(line);
+            logs.scrollTop = logs.scrollHeight;
+        }
+        
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            
+            addLog('Попытка авторизации...');
+            
+            try {
+                const resp = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                
+                const data = await resp.json();
+                token = data.token;
+                addLog(`✓ Авторизация успешна. Токен: ${token.substring(0, 20)}...`, 'success');
+            } catch (e) {
+                addLog(`✗ Ошибка авторизации: ${e.message}`, 'error');
+            }
+        }
+        
+        async function ask() {
+            if (!token) {
+                addLog('✗ Сначала войдите в систему', 'error');
+                return;
+            }
+            
+            const question = document.getElementById('question').value;
+            const output = document.getElementById('output');
+            output.textContent = '';
+            
+            addLog(`Отправка вопроса: "${question}"`);
+            
+            try {
+                const resp = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        question: question,
+                        model: 'qwen2.5:3b',
+                        stream: true
+                    })
+                });
+                
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                
+                addLog(`✓ Соединение установлено. Content-Type: ${resp.headers.get('content-type')}`, 'success');
+                
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let tokenCount = 0;
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        addLog('✓ Поток завершён', 'success');
+                        break;
+                    }
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const jsonStr = line.slice(6).trim();
+                                if (!jsonStr) continue;
+                                
+                                const data = JSON.parse(jsonStr);
+                                
+                                if (data.error) {
+                                    addLog(`✗ Ошибка от сервера: ${data.error}`, 'error');
+                                    return;
+                                }
+                                
+                                if (data.token) {
+                                    tokenCount++;
+                                    output.textContent += data.token;
+                                    
+                                    if (tokenCount % 10 === 0) {
+                                        addLog(`Получено токенов: ${tokenCount}`);
+                                    }
+                                }
+                                
+                                if (data.done) {
+                                    addLog(`✓ Генерация завершена. Всего токенов: ${tokenCount}`, 'success');
+                                    return;
+                                }
+                            } catch (e) {
+                                addLog(`✗ Ошибка парсинга: ${e.message}`, 'error');
+                                addLog(`   Строка: ${line}`, 'error');
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                addLog(`✗ Ошибка: ${e.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

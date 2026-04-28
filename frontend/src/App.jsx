@@ -169,6 +169,7 @@ export default function App() {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let accumulatedText = ''
+      let buffer = ''
 
       // Убираем индикатор загрузки
       setMessages(prev =>
@@ -182,13 +183,22 @@ export default function App() {
         const { done, value } = await reader.read()
         if (done) break
 
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
+        // Декодируем чанк и добавляем к буферу
+        buffer += decoder.decode(value, { stream: true })
+        
+        // Разбиваем буфер на строки
+        const lines = buffer.split('\n')
+        
+        // Последняя строка может быть неполной, сохраняем её в буфер
+        buffer = lines.pop() || ''
 
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6))
+              const jsonStr = line.slice(6).trim()
+              if (!jsonStr) continue
+              
+              const data = JSON.parse(jsonStr)
               
               if (data.error) {
                 setMessages(prev =>
@@ -197,7 +207,7 @@ export default function App() {
                     : m
                   )
                 )
-                break
+                return
               }
 
               if (data.token) {
@@ -211,10 +221,10 @@ export default function App() {
               }
 
               if (data.done) {
-                break
+                return
               }
             } catch (e) {
-              // Игнорируем ошибки парсинга
+              console.error('Parse error:', e, 'Line:', line)
             }
           }
         }
