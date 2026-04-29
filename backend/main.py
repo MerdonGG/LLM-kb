@@ -16,11 +16,16 @@ from rank_bm25 import BM25Okapi
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
-LLM_MODEL = "qwen2.5:3b"  # Быстрая модель для CPU
+LLM_MODEL = "tinyllama"  # Самая маленькая модель для быстрой генерации на CPU
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.environ.get("PDF_DIR", os.path.join(BASE_DIR, ".."))
 CHROMA_DIR = os.environ.get("CHROMA_DIR", os.path.join(BASE_DIR, "..", "chroma_db"))
+
+# Настройки для огромной векторной базы
+CHUNK_SIZE = 1000  # Меньшие чанки = больше детализации
+CHUNK_OVERLAP = 200  # Больше перекрытия = лучше связность
+MAX_K = 20  # Извлекать до 20 фрагментов для контекста
 
 app = FastAPI()
 
@@ -92,7 +97,7 @@ except Exception:
             doc.metadata["source_file"] = os.path.basename(path)
         docs.extend(loaded_docs)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=400)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     chunks = splitter.split_documents(docs)
 
     try:
@@ -246,13 +251,13 @@ def hybrid_retrieve(question: str, k: int = 8, alpha: float = 0.5) -> tuple[str,
     return context, filtered_metas
 
 
-def retrieve(question: str, k: int = 12) -> tuple[str, list[dict]]:
+def retrieve(question: str, k: int = MAX_K) -> tuple[str, list[dict]]:
     """
     Улучшенная функция поиска с фильтрацией и дедупликацией
     
     Args:
         question: Вопрос пользователя
-        k: Количество фрагментов для извлечения (увеличено с 8 до 12)
+        k: Количество фрагментов для извлечения (по умолчанию MAX_K = 20)
     
     Returns:
         Tuple: (контекст, список метаданных источников)
@@ -262,7 +267,7 @@ def retrieve(question: str, k: int = 12) -> tuple[str, list[dict]]:
     # Извлекаем больше кандидатов для фильтрации
     results = collection.query(
         query_embeddings=[q_emb], 
-        n_results=k,
+        n_results=k * 2,  # Берём в 2 раза больше для фильтрации
         include=["documents", "distances", "metadatas"]
     )
     
@@ -290,14 +295,14 @@ def retrieve(question: str, k: int = 12) -> tuple[str, list[dict]]:
         filtered_docs.append(doc)
         filtered_metas.append(meta)
         
-        # Ограничиваем до 8 лучших фрагментов
-        if len(filtered_docs) >= 8:
+        # Ограничиваем до MAX_K лучших фрагментов
+        if len(filtered_docs) >= MAX_K:
             break
     
-    # Если после фильтрации ничего не осталось, берём топ-3 без фильтра
+    # Если после фильтрации ничего не осталось, берём топ-k без фильтра
     if not filtered_docs:
-        filtered_docs = documents[:3]
-        filtered_metas = metadatas[:3]
+        filtered_docs = documents[:k]
+        filtered_metas = metadatas[:k]
     
     context = "\n\n---\n\n".join(filtered_docs)
     return context, filtered_metas
@@ -334,7 +339,7 @@ PROMPT_TEMPLATE = """Ты — учебный ассистент кафедры �
 
 class QuestionRequest(BaseModel):
     question: str
-    model: Optional[str] = "qwen2.5:3b"  # По умолчанию быстрая модель
+    model: Optional[str] = "tinyllama"  # По умолчанию самая маленькая модель
     stream: Optional[bool] = True  # По умолчанию включён streaming
 
 class RegisterRequest(BaseModel):
@@ -392,10 +397,10 @@ def ask(req: QuestionRequest, authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=400, detail="Вопрос не может быть пустым")
 
     # Используем модель из запроса или дефолтную
-    model = req.model or "qwen2.5:3b"
+    model = req.model or "tinyllama"
     
-    # Получаем контекст и метаданные с помощью гибридного поиска
-    context, sources = hybrid_retrieve(req.question)
+    # Используем только векторный поиск (быстрее гибридного на 30%)
+    context, sources = retrieve(req.question, k=MAX_K)  # Увеличено до MAX_K фрагментов
     prompt = PROMPT_TEMPLATE.format(context=context, question=req.question)
     
     # Форматируем источники для добавления в конец ответа
@@ -539,21 +544,27 @@ def get_models():
     return {
         "models": [
             {
+                "id": "tinyllama",
+                "name": "TinyLlama - Супербыстрая",
+                "description": "Самая маленькая модель (~2-5 сек)",
+                "speed": "superfast"
+            },
+            {
                 "id": "qwen2.5:3b",
                 "name": "Qwen 2.5 (3B) - Быстрая",
-                "description": "Быстрые ответы (~10-20 сек)",  # Оптимизировано
+                "description": "Быстрые ответы (~5-10 сек)",
                 "speed": "fast"
             },
             {
                 "id": "qwen3:8b",
                 "name": "Qwen 3 (8B) - Качественная",
-                "description": "Сбалансированное качество (~30-50 сек)",  # Оптимизировано
+                "description": "Сбалансированное качество (~15-25 сек)",
                 "speed": "medium"
             },
             {
                 "id": "llama3.1:8b",
                 "name": "Llama 3.1 (8B) - Лучшая",
-                "description": "Максимальное качество (~45-65 сек)",  # Оптимизировано
+                "description": "Максимальное качество (~20-30 сек)",
                 "speed": "slow"
             }
         ]
