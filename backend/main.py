@@ -16,7 +16,7 @@ from rank_bm25 import BM25Okapi
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "nomic-embed-text"
-LLM_MODEL = "tinyllama"  # Самая маленькая модель для быстрой генерации на CPU
+LLM_MODEL = "qwen2.5:1.5b"  # Быстрая модель с поддержкой русского языка
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PDF_DIR = os.environ.get("PDF_DIR", os.path.join(BASE_DIR, ".."))
@@ -339,7 +339,7 @@ PROMPT_TEMPLATE = """Ты — учебный ассистент кафедры �
 
 class QuestionRequest(BaseModel):
     question: str
-    model: Optional[str] = "tinyllama"  # По умолчанию самая маленькая модель
+    model: Optional[str] = "qwen2.5:1.5b"  # По умолчанию быстрая модель с русским
     stream: Optional[bool] = True  # По умолчанию включён streaming
 
 class RegisterRequest(BaseModel):
@@ -544,9 +544,9 @@ def get_models():
     return {
         "models": [
             {
-                "id": "tinyllama",
-                "name": "TinyLlama - Супербыстрая",
-                "description": "Самая маленькая модель (~2-5 сек)",
+                "id": "qwen2.5:1.5b",
+                "name": "Qwen 2.5 (1.5B) - Супербыстрая",
+                "description": "Быстрая модель с русским языком (~3-7 сек)",
                 "speed": "superfast"
             },
             {
